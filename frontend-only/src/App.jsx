@@ -11,6 +11,8 @@ import Dashboard from './pages/Dashboard';
 import AgentDashboard from './pages/AgentDashboard';
 import ChatPage from './pages/ChatPage';
 import AdminDashboard from './pages/AdminDashboard';
+// CRITICAL FIX: Import the AuthCallback component
+import AuthCallback from './pages/AuthCallback'; 
 
 function App() {
   return (
@@ -23,6 +25,12 @@ function App() {
               <Route path="/" element={<LandingPage />} />
               <Route path="/login" element={<LoginPage />} />
               <Route path="/register" element={<RegisterPage />} />
+              
+              {/* CRITICAL FIX: OAuth Callback Route */}
+              <Route path="/auth/callback" element={<AuthCallback />} />
+              
+              {/* Public Dashboard Routes (Needs to be cleaned up or protected below) */}
+              {/* NOTE: You have duplicate routes below. Keep the ProtectedRoute versions. */}
               <Route path="/admin-dashboard" element={<AdminDashboard />} />
               <Route path="/agent-dashboard" element={<AgentDashboard />} />
               <Route path="/dashboard" element={<Dashboard />} />

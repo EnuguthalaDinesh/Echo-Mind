@@ -1,0 +1,12 @@
+# .dockerignore
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.pyc
+*.egg-info
+.env
+data/
+logs/
+temp/

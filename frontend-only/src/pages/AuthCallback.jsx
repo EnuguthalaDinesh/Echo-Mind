@@ -1,50 +1,43 @@
-// src/context/AuthContext.jsx
+// src/pages/AuthCallback.js
 
-import React, { createContext, useState, useContext } from "react";
-import axios from "axios";
+import React, { useEffect } from 'react';
+import { useAuth } from '../context/AuthContext';
+import { useNavigate } from 'react-router-dom';
+import LoadingSpinner from '../components/LoadingSpinner';
 
-// Create context
-const AuthContext = createContext();
+const AuthCallback = () => {
+    const { user, loading } = useAuth();
+    const navigate = useNavigate();
 
-export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);           // Stores full user: { email, name, role, ... }
-  const [accessToken, setAccessToken] = useState(""); // Optionally store access token
+    useEffect(() => {
+        // If the user object is already populated and we are not loading, 
+        // it means the JWT token was successfully set via the backend redirect 
+        // (which sets the cookie) and the AuthProvider loaded the session.
 
-  // Login function - expects backend to return { access_token, role, ... }
-  const login = async (email, password) => {
-    const res = await axios.post("/login", { email, password });
-    if (res.data && res.data.access_token) {
-      setAccessToken(res.data.access_token);
-      const userObj = {
-        email: res.data.email,
-        name: res.data.name,
-        role: res.data.role,
-        accessToken: res.data.access_token
-      };
-      setUser(userObj);
-      // Optionally: localStorage.setItem("user", JSON.stringify(userObj));
-      return userObj; // So LoginPage gets { ...user, role }
-    }
-    throw new Error("Invalid login response");
-  };
+        if (user && !loading) {
+            console.log("OAuth Success: User session established.");
+            
+            // Redirect based on the user role (same logic as in Login/Register)
+            if (user.role === "admin") {
+                navigate('/admin-dashboard', { replace: true });
+            } else if (user.role === "agent") {
+                navigate('/agent-dashboard', { replace: true });
+            } else {
+                navigate('/dashboard', { replace: true });
+            }
+        } else if (!loading && !user) {
+            // This case should ideally not happen after a successful callback 
+            // unless the cookie failed to set.
+            console.error("OAuth Callback Failed: User object missing.");
+            navigate('/login', { replace: true });
+        }
+    }, [user, loading, navigate]);
 
-  // Logout function
-  const logout = () => {
-    setUser(null);
-    setAccessToken("");
-    // Optionally: localStorage.removeItem("user");
-  };
-
-  // You can enhance this with registration, token refresh, etc.
-
-  return (
-    <AuthContext.Provider value={{ user, login, logout, accessToken }}>
-      {children}
-    </AuthContext.Provider>
-  );
+    return (
+        <div className="min-h-screen flex items-center justify-center">
+            <LoadingSpinner message="Finalizing sign-in..." />
+        </div>
+    );
 };
 
-// Hook to use auth everywhere in the app
-export const useAuth = () => useContext(AuthContext);
-
-export default AuthContext;
+export default AuthCallback;

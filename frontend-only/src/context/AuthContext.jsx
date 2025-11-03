@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
+// 🎯 Import the API_BASE_URL from your new config.js file
+import { API_BASE_URL } from '../../config'; 
 
 // Create Auth Context
 const AuthContext = createContext();
@@ -34,8 +36,17 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     if (!user || !user.access_token) return;
 
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${protocol}://localhost:8000/ws?token=${user.access_token}`);
+    // --- FIX: Correct WebSocket URL Construction using imported API_BASE_URL ---
+    const wsProtocol = API_BASE_URL.startsWith("https") ? "wss" : "ws";
+    
+    // Extract only the host/path portion, removing the http(s):// prefix
+    const wsHost = API_BASE_URL.replace(/^https?:\/\//, '');
+
+    // Construct the final, correct WebSocket URL
+    const wsUrl = `${wsProtocol}://${wsHost}/ws?token=${user.access_token}`;
+    // --------------------------------------------------------------------------
+
+    const socket = new WebSocket(wsUrl);
 
     socket.onopen = () => console.log("✅ WebSocket connected");
     socket.onclose = () => console.log("❌ WebSocket closed");
@@ -45,7 +56,9 @@ export const AuthProvider = ({ children }) => {
     setWs(socket);
 
     return () => {
-      socket.close();
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.close();
+      }
     };
   }, [user]);
 
@@ -53,7 +66,8 @@ export const AuthProvider = ({ children }) => {
   const register = async (name, email, password) => {
     setLoading(true);
     try {
-      const res = await fetch("http://localhost:8000/register", {
+      // Use the imported API_BASE_URL
+      const res = await fetch(`${API_BASE_URL}/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, email, password }),
@@ -75,7 +89,8 @@ export const AuthProvider = ({ children }) => {
   const login = async (email, password) => {
     setLoading(true);
     try {
-      const res = await fetch("http://localhost:8000/login", {
+      // Use the imported API_BASE_URL
+      const res = await fetch(`${API_BASE_URL}/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
@@ -94,10 +109,9 @@ export const AuthProvider = ({ children }) => {
 
       // Since your original code had a separate /me fetch, I'll keep the logic simple
       // and assume all necessary fields (like role) are available directly in the /login response.
-      // If /login only returns tokens, you would need the /me call below:
       /*
-      const userInfoRes = await fetch("http://localhost:8000/me", {
-        headers: { Authorization: `Bearer ${data.access_token}` },
+      const userInfoRes = await fetch(`${API_BASE_URL}/me`, {
+         headers: { Authorization: `Bearer ${data.access_token}` },
       });
       const userInfo = await userInfoRes.json();
       const loggedInUser = { ...userInfo, access_token: data.access_token, refresh_token: data.refresh_token };
@@ -115,6 +129,9 @@ export const AuthProvider = ({ children }) => {
 
   const logout = () => {
     setUser(null);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+    }
     setWs(null);
   };
 

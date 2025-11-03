@@ -1,0 +1,20 @@
+# --- Core Framework and Async ---
+fastapi
+uvicorn[standard]  # For ASGI server and WebSocket support
+python-dotenv
+httpx                # For EmailJS API calls
+
+# --- Authentication and Security ---
+bcrypt               # Required for password hashing
+python-jose[cryptography] # Required for JWT (access/refresh tokens)
+
+# --- Database Drivers ---
+motor                # Asynchronous MongoDB driver
+redis                # Asynchronous Redis driver
+email-validator      # For Pydantic EmailStr validation
+
+# --- AI and OAuth ---
+google-generativeai  # For Gemini API calls
+authlib              # For Google/GitHub OAuth
+aiosmtplib
+itsdangerous

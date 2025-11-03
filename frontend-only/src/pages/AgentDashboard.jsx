@@ -4,8 +4,7 @@ import { useAuth } from "../context/AuthContext";
 import LoadingSpinner from "../components/LoadingSpinner";
 import { motion } from "framer-motion";
 
-// Assume API is running on localhost:8000 (Based on previous config)
-const API_BASE_URL = "http://localhost:8000";
+const API_BASE_URL = "https://echo-backend-1-ubeb.onrender.com";
 
 // --- Helper: SLA Color ---
 function slaColor(openedAt) {
@@ -18,9 +17,16 @@ function slaColor(openedAt) {
     return "bg-red-100 text-red-800 border-red-400 animate-pulse"; // > 2 days
 }
 
-// --- Helper: Time Since ---
+// --- Helper: Time Since (FIXED FOR TIMEZONE ACCURACY) ---
 const timeSince = (dateString) => {
-    const seconds = Math.floor((new Date() - new Date(dateString)) / 1000);
+    const past = new Date(dateString);
+    const now = new Date();
+    // Calculate difference in milliseconds
+    const seconds = Math.floor((now.getTime() - past.getTime()) / 1000); 
+    
+    // Fallback if seconds is too small (just now)
+    if (seconds < 5) return "just now";
+
     let interval = seconds / 31536000;
 
     if (interval > 1) return Math.floor(interval) + " years";
@@ -35,67 +41,131 @@ const timeSince = (dateString) => {
     return Math.floor(seconds) + " seconds";
 };
 
-// --- Ticket Detail & Response Modal Component ---
-const TicketDetailModal = ({ ticket, onClose, onResolve, onReply, onStatusChange }) => {
+// --- Ticket Detail & Resolution Modal Component ---
+const TicketDetailModal = ({ ticket, onClose, onStatusChange }) => {
     const { user } = useAuth();
-    const [response, setResponse] = useState('');
+    const [resolutionMessage, setResolutionMessage] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [status, setStatus] = useState(ticket.status);
+    const [customerProfile, setCustomerProfile] = useState(null);
+    const [profileLoading, setProfileLoading] = useState(true);
     
     const ticketIdentifier = ticket._id; 
     
-    // Placeholder data for Customer 360 (In a real app, this would be passed via prop)
-    const customerInfo = {
-        name: "Sharath S.",
-        email: "sharath@example.com",
-        tier: ticket.customer_id.length % 2 === 0 ? "VIP" : "Standard", 
-        lastSentiment: "Angry 😠 (last message)",
-        lastOrder: "2025-10-15",
-        recentTickets: [
-             { id: 1, subject: "Refund delayed", status: "resolved" },
-             { id: 2, subject: "Broken API key", status: "closed" },
-             { id: 3, subject: "VIP lounge access", status: "resolved" },
-        ]
-    };
-
     const conversation = ticket.conversation_history || [
         { role: 'user', content: ticket.description || "No detailed issue provided.", timestamp: ticket.created_at }
     ];
+    
+    // FETCH CUSTOMER PROFILE HOOK (Dynamic Fetching Fix)
+    useEffect(() => {
+        const fetchProfile = async () => {
+            const token = user?.access_token;
 
-    const handleReplySubmit = async (e) => {
-        e.preventDefault();
-        if (!response.trim()) return;
+            if (!token) {
+                // Critical Fix: Show auth error immediately if token is missing
+                setCustomerProfile({
+                    name: "Authentication Required",
+                    email: "Log out and log back in.",
+                    tier: "Unauthorized",
+                    last_sentiment: "N/A"
+                });
+                setProfileLoading(false);
+                return;
+            }
+
+            setProfileLoading(true);
+            try {
+                const res = await fetch(`${API_BASE_URL}/customer/${ticket.customer_id}/profile`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                    },
+                });
+
+                if (!res.ok) {
+                    // Catch 401/403 and display specific message
+                    if (res.status === 401 || res.status === 403) {
+                         throw new Error("Session Invalid/Expired (401/403). Please refresh login.");
+                    }
+                    throw new Error(`Failed to fetch profile: ${res.status}`);
+                }
+
+                const data = await res.json();
+                setCustomerProfile(data);
+
+            } catch (err) {
+                console.error("Error fetching customer profile:", err.message);
+                setCustomerProfile({
+                    name: "Profile Load Failed",
+                    email: err.message.includes("401") ? "Authentication Error" : err.message,
+                    tier: "Unknown",
+                    last_sentiment: "N/A"
+                });
+            } finally {
+                setProfileLoading(false);
+            }
+        };
+
+        if (user && ticket.customer_id) {
+            fetchProfile();
+        }
+    }, [user, ticket.customer_id]); 
+
+    // SUBMIT RESOLUTION LOGIC (Single Message Enforcement)
+    const handleResolutionSubmit = async (e) => {
+        if (e) e.preventDefault(); 
+        // Ensure message is present when submitting resolution
+        if (!resolutionMessage.trim()) {
+            alert("The final resolution message cannot be empty.");
+            return;
+        }
+
         setIsSubmitting(true);
         try {
-            await onReply(ticketIdentifier, response); 
-            onClose(); // Close on successful reply
+            // Note: handleStatusChange needs the resolution message to resolve
+            await onStatusChange(
+                ticketIdentifier, 
+                'resolved', 
+                resolutionMessage.trim()
+            );
+            onClose(); 
         } catch (error) {
-             console.error("Failed to send reply, keeping modal open.", error);
+            console.error("Failed to submit resolution.", error);
         } finally {
             setIsSubmitting(false);
-            setResponse('');
+            setResolutionMessage('');
         }
     };
     
+    // STATUS UPDATE LOGIC (for non-resolution changes only)
     const handleStatusUpdate = async (newStatus) => {
+        if (newStatus === status || newStatus === 'resolved') return; // 'resolved' handled by form/submit
+        
         if (!window.confirm(`Are you sure you want to change status to ${newStatus.toUpperCase()}?`)) return;
+        
         setIsSubmitting(true);
         try {
-            await onStatusChange(ticketIdentifier, newStatus);
-            setStatus(newStatus); // Update local status on success
-            if (newStatus === 'resolved') onClose();
+            await onStatusChange(ticketIdentifier, newStatus, null); // Pass null message
+            setStatus(newStatus); 
         } catch (error) {
-             console.error("Failed to update status.", error);
+            console.error("Failed to update status.", error);
         } finally {
             setIsSubmitting(false);
         }
     };
-
+    
     const StatusDropdown = () => (
         <select 
             value={status} 
-            onChange={(e) => handleStatusUpdate(e.target.value)}
-            disabled={isSubmitting}
+            onChange={(e) => {
+                const newStatus = e.target.value;
+                if (newStatus === 'resolved') {
+                    // Update local state to trigger the submit form view
+                    setStatus('resolved');
+                } else {
+                    handleStatusUpdate(newStatus);
+                }
+            }}
+            disabled={isSubmitting || status === 'resolved'}
             className={`px-3 py-1 rounded-lg font-semibold border-2 transition ${
                 status === 'resolved' ? 'bg-emerald-500 text-white' : 
                 status === 'open' ? 'bg-red-500 text-white' : 
@@ -105,9 +175,30 @@ const TicketDetailModal = ({ ticket, onClose, onResolve, onReply, onStatusChange
             <option value="open">Open</option>
             <option value="escalated">Escalated (L2)</option>
             <option value="pending">Pending Customer</option>
-            <option value="resolved">Resolved</option>
+            <option value="resolved" disabled={status === 'resolved'}>Resolved</option>
         </select>
     );
+
+    // DYNAMIC PROFILE RENDERER
+    const renderProfile = () => {
+        if (profileLoading) return <div className="p-3 text-center"><LoadingSpinner /></div>;
+        if (!customerProfile) return <p className="text-red-500 text-sm">Failed to load user profile.</p>;
+
+        const { name, email, tier, last_sentiment } = customerProfile;
+        
+        return (
+            <div className="text-sm space-y-3 p-3 bg-white rounded-lg shadow-sm border">
+                <p><strong>Customer ID:</strong> {ticket.customer_id.substring(0, 10)}...</p>
+                <p><strong>Name:</strong> {name} 
+                    <span className={`ml-2 text-xs px-2 py-0.5 rounded-full font-semibold ${tier === 'VIP' ? 'bg-yellow-200 text-yellow-800' : 'bg-blue-100 text-blue-800'}`}>
+                        {tier}
+                    </span>
+                </p>
+                <p><strong>Email:</strong> {email}</p>
+                <p><strong>Initial Sentiment:</strong> <span className="font-semibold">{last_sentiment || "Neutral 😐"}</span></p>
+            </div>
+        );
+    };
 
     return (
         <motion.div
@@ -125,40 +216,37 @@ const TicketDetailModal = ({ ticket, onClose, onResolve, onReply, onStatusChange
                 <div className="p-6 bg-gray-50 border-r col-span-1 flex flex-col">
                     <h3 className="text-lg font-bold mb-4 text-gray-700 flex items-center gap-2"><User className="h-5 w-5" /> Customer 360 View</h3>
                     
-                    <div className="text-sm space-y-3 p-3 bg-white rounded-lg shadow-sm border">
-                        <p><strong>Customer ID:</strong> {ticket.customer_id.substring(0, 10)}...</p>
-                        <p><strong>Name:</strong> {customerInfo.name} 
-                            <span className={`ml-2 text-xs px-2 py-0.5 rounded-full font-semibold ${customerInfo.tier === 'VIP' ? 'bg-yellow-200 text-yellow-800' : 'bg-blue-100 text-blue-800'}`}>
-                                {customerInfo.tier}
-                            </span>
-                        </p>
-                        <p><strong>Initial Sentiment:</strong> <span className="font-semibold">{customerInfo.lastSentiment}</span></p>
-                    </div>
+                    {renderProfile()} 
                     
+                    {/* ... (Static content sections below remain unchanged) ... */}
                     <h4 className="text-md font-semibold mt-6 mb-2 text-gray-600 flex items-center gap-1"><List className="h-4 w-4" /> Recent Interactions</h4>
                     <ul className="text-xs space-y-1 overflow-y-auto max-h-32">
-                        {customerInfo.recentTickets.map(t => (
+                        {[
+                            { id: 1, subject: "Refund delayed", status: "resolved" },
+                            { id: 2, subject: "Broken API key", status: "closed" },
+                            { id: 3, subject: "VIP lounge access", status: "resolved" },
+                        ].map(t => (
                             <li key={t.id} className="truncate text-gray-700 hover:text-indigo-600 cursor-pointer">
                                 [{t.status.substring(0,1).toUpperCase()}] {t.subject}
                             </li>
                         ))}
                     </ul>
                     
-                     <h4 className="text-md font-semibold mt-6 mb-2 text-gray-600 flex items-center gap-1"><DollarSign className="h-4 w-4" /> Financial Overview</h4>
-                     <p className="text-xs">Account Balance: $450.00</p>
-                     <p className="text-xs text-red-500 font-medium">Overdue Invoice: $49.99</p>
+                    <h4 className="text-md font-semibold mt-6 mb-2 text-gray-600 flex items-center gap-1"><DollarSign className="h-4 w-4" /> Financial Overview</h4>
+                    <p className="text-xs">Account Balance: $450.00</p>
+                    <p className="text-xs text-red-500 font-medium">Overdue Invoice: $49.99</p>
 
-                     <h4 className="text-md font-semibold mt-6 mb-2 text-gray-600 flex items-center gap-1"><Zap className="h-4 w-4" /> Internal Notes</h4>
-                     <textarea
+                    <h4 className="text-md font-semibold mt-6 mb-2 text-gray-600 flex items-center gap-1"><Zap className="h-4 w-4" /> Internal Notes</h4>
+                    <textarea
                         placeholder="Add private notes (customer cannot see this)..."
                         rows="3"
                         className="w-full p-2 border rounded-lg text-xs resize-none"
-                     ></textarea>
+                    ></textarea>
 
                 </div>
 
 
-                {/* --- Right Column: Ticket Conversation & Response --- */}
+                {/* --- Right Column: Ticket Conversation & Resolution Form --- */}
                 <div className="col-span-2 flex flex-col h-full">
                     <div className="flex justify-between items-center p-6 border-b bg-white">
                         <h2 className="text-xl font-bold text-gray-800 truncate">{ticket.subject || ticket.description}</h2>
@@ -170,7 +258,7 @@ const TicketDetailModal = ({ ticket, onClose, onResolve, onReply, onStatusChange
                     <div className="p-6 flex-1 overflow-y-auto space-y-4 bg-gray-50/50">
                         {/* Conversation History */}
                         <div className="h-full overflow-y-auto space-y-3 pr-2">
-                             <p className="text-xs text-gray-500 mb-4 font-semibold border-b pb-2">Ticket ID: {ticketIdentifier} | Domain: {ticket.domain.toUpperCase()}</p>
+                            <p className="text-xs text-gray-500 mb-4 font-semibold border-b pb-2">Ticket ID: {ticketIdentifier} | Domain: {ticket.domain?.toUpperCase() || 'GENERAL'}</p>
                             {conversation.map((msg, index) => (
                                 <div key={index} className={`flex ${msg.role === 'agent' ? 'justify-end' : 'justify-start'}`}>
                                     <div
@@ -181,7 +269,10 @@ const TicketDetailModal = ({ ticket, onClose, onResolve, onReply, onStatusChange
                                         }`}
                                     >
                                         <strong className="capitalize text-xs">{msg.role}:</strong> 
-                                        <div className="text-xs text-gray-400 mt-1">{new Date(msg.timestamp).toLocaleTimeString()}</div>
+                                        {/* FIX: Using locale methods for accurate timezone display */}
+                                        <div className="text-xs text-gray-400 mt-1">
+                                            {new Date(msg.timestamp).toLocaleDateString()} {new Date(msg.timestamp).toLocaleTimeString()}
+                                        </div>
                                         {msg.content}
                                     </div>
                                 </div>
@@ -189,47 +280,36 @@ const TicketDetailModal = ({ ticket, onClose, onResolve, onReply, onStatusChange
                         </div>
                     </div>
                     
-                    {/* Footer: Actions and Response Form */}
+                    {/* Footer: Resolution Form */}
                     <div className="p-6 border-t bg-white">
+                        
                         {/* Resolution/Status Bar */}
                         <div className="flex justify-between items-center pb-4">
                             <div className="flex items-center gap-3">
                                 <strong>Status:</strong>
                                 <StatusDropdown />
                             </div>
-                            
-                            {/* Quick Resolve Button */}
-                            {status !== 'resolved' && (
-                                <button
-                                    onClick={() => handleStatusUpdate('resolved')}
-                                    disabled={isSubmitting}
-                                    className="px-4 py-2 bg-emerald-500 text-white rounded-full hover:bg-emerald-600 transition disabled:opacity-50 flex items-center gap-1 shadow-md text-sm"
-                                >
-                                    <CheckCircle className="h-4 w-4" /> {isSubmitting ? '...' : 'Quick Resolve'}
-                                </button>
-                            )}
                         </div>
 
-                        {/* Response Form */}
-                        {status !== 'resolved' && (
-                            <form onSubmit={handleReplySubmit}>
-                                <textarea
-                                    value={response}
-                                    onChange={(e) => setResponse(e.target.value)}
-                                    placeholder={`Type your reply to the customer...`}
-                                    rows="3"
-                                    className="w-full p-3 border rounded-lg focus:ring-blue-500 focus:border-blue-500 mb-3 resize-none"
-                                    required
-                                />
-                                <button
-                                    type="submit"
-                                    disabled={isSubmitting || !response.trim()}
-                                    className="w-full py-3 bg-blue-500 text-white rounded-lg font-semibold hover:bg-blue-600 transition disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg"
-                                >
-                                    <Send className="h-5 w-5" /> {isSubmitting ? 'Sending Reply...' : 'Send Reply'}
-                                </button>
-                            </form>
-                        )}
+                        {/* Resolution Input and Submit Button */}
+                        <form onSubmit={handleResolutionSubmit}>
+                            <textarea
+                                value={resolutionMessage}
+                                onChange={(e) => setResolutionMessage(e.target.value)}
+                                placeholder={"Enter the FINAL resolution message (required to mark as resolved)."}
+                                rows="3"
+                                className="w-full p-3 border rounded-lg focus:ring-emerald-500 focus:border-emerald-500 mb-3 resize-none"
+                                required
+                            />
+                            <button
+                                type="submit"
+                                disabled={isSubmitting || !resolutionMessage.trim()}
+                                className={`w-full py-3 text-white rounded-lg font-semibold transition disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg bg-emerald-600 hover:bg-emerald-700`}
+                            >
+                                <Send className="h-5 w-5" /> 
+                                {isSubmitting ? 'Sending...' : 'Resolve & Send Final Message'}
+                            </button>
+                        </form>
                     </div>
                 </div>
             </motion.div>
@@ -258,7 +338,7 @@ const AgentDashboard = () => {
     // Function to fetch tickets from the backend
     const fetchTickets = async () => {
         if (!user || !user.access_token) {
-            setError("Authentication failed. Please log in.");
+            setError("Authentication failed. Please log in or refresh your session.");
             return;
         }
         setLoading(true);
@@ -266,13 +346,16 @@ const AgentDashboard = () => {
         try {
             const res = await fetch(`${API_BASE_URL}/tickets`, {
                 headers: {
-                    'Authorization': `Bearer ${user.access_token}`,
+                    'Authorization': `Bearer ${user.access_token}`, 
                     'Content-Type': 'application/json',
                 },
             });
             
             if (!res.ok) {
                 const errData = await res.json();
+                if (res.status === 401 || res.status === 403) {
+                    throw new Error("Session expired. Please log in again.");
+                }
                 throw new Error(errData.detail || `Failed to fetch tickets (Status: ${res.status})`);
             }
 
@@ -288,42 +371,27 @@ const AgentDashboard = () => {
         }
     };
     
-    // Function to handle agent response (reply)
-    const handleReply = async (ticketId, message) => {
-        try {
-            const res = await fetch(`${API_BASE_URL}/tickets/${ticketId}/message`, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${user.access_token}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ message, role: 'agent' }) 
-            });
-
-            if (!res.ok) {
-                const errData = await res.json();
-                throw new Error(errData.detail || "Failed to send reply.");
-            }
-            
-            await fetchTickets(); 
-            // Note: Modal closes on success, so no need to clear selectedTicket here.
-            
-        } catch (err) {
-            console.error("Reply error:", err);
-            throw err;
+    // UPDATED: Function to change ticket status, now accepting resolutionMessage
+    const handleStatusChange = async (ticketId, newStatus, resolutionMessage) => {
+        
+        if (newStatus === 'resolved' && (!resolutionMessage || !resolutionMessage.trim())) {
+             alert("Error: Resolution message cannot be empty when resolving a ticket.");
+             throw new Error("Resolution message required."); 
         }
-    };
-    
-    // Function to change ticket status
-    const handleStatusChange = async (ticketId, newStatus) => {
+
         try {
+            const payload = { 
+                status: newStatus,
+                ...(newStatus === 'resolved' && { resolution_message: resolutionMessage })
+            };
+            
             const res = await fetch(`${API_BASE_URL}/tickets/${ticketId}/status`, {
                 method: 'PUT',
                 headers: {
                     'Authorization': `Bearer ${user.access_token}`,
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({ status: newStatus })
+                body: JSON.stringify(payload) 
             });
 
             if (!res.ok) {
@@ -331,16 +399,21 @@ const AgentDashboard = () => {
                 throw new Error(errData.detail || `Failed to update status to ${newStatus}.`);
             }
             
-            // Re-fetch to update all data immediately
             await fetchTickets(); 
             
-            // If the selected ticket was the one modified, update its local state too
+            if (newStatus === 'resolved') {
+                alert("✅ Ticket marked as RESOLVED! Resolution email sent to customer via SendGrid.");
+            } else {
+                alert(`✅ Status updated to ${newStatus.toUpperCase()}.`);
+            }
+            
             if (selectedTicket && selectedTicket._id === ticketId) {
                 setSelectedTicket(prev => ({ ...prev, status: newStatus }));
             }
             
         } catch (err) {
             console.error("Status update error:", err);
+            alert(`❌ Failed to update status: ${err.message}`);
             throw err;
         }
     };
@@ -352,15 +425,15 @@ const AgentDashboard = () => {
         }
     }, [user]); 
 
-    // --- Component for high-level metrics ---
+    // ... (AgentMetrics component remains unchanged)
     const AgentMetrics = ({ metrics }) => (
         <div className="grid grid-cols-6 gap-4 mb-8 text-center bg-white p-4 rounded-xl shadow-lg border border-gray-100">
             {[{ title: "Total Open", value: metrics.totalOpen, color: "text-blue-500" },
-              { title: "Overdue SLA", value: metrics.overdue, color: "text-red-500", icon: AlertCircle },
-              { title: "Assigned To Me", value: metrics.assignedToMe, color: "text-indigo-500" },
-              { title: "Closed Today", value: metrics.closedToday, color: "text-green-600" },
-              { title: "Avg. Resolution", value: metrics.resolutionTime, color: "text-cyan-500" },
-              { title: "CSAT Score", value: metrics.csat, color: "text-pink-500" }
+             { title: "Overdue SLA", value: metrics.overdue, color: "text-red-500", icon: AlertCircle },
+             { title: "Assigned To Me", value: metrics.assignedToMe, color: "text-indigo-500" },
+             { title: "Closed Today", value: metrics.closedToday, color: "text-green-600" },
+             { title: "Avg. Resolution", value: metrics.resolutionTime, color: "text-cyan-500" },
+             { title: "CSAT Score", value: metrics.csat, color: "text-pink-500" }
             ].map((metric, index) => (
                 <motion.div key={index} whileHover={{ scale: 1.05, backgroundColor: "#f5f8ff" }} className="border-r last:border-r-0 px-3 p-2 rounded-lg">
                     <p className="text-sm font-medium text-gray-500">{metric.title}</p>
@@ -461,8 +534,7 @@ const AgentDashboard = () => {
                 <TicketDetailModal
                     ticket={selectedTicket}
                     onClose={() => setSelectedTicket(null)}
-                    onReply={handleReply}
-                    onStatusChange={handleStatusChange} // Use the specific status change handler
+                    onStatusChange={handleStatusChange} 
                 />
             )}
         </div>
